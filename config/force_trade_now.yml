@@ -1,0 +1,75 @@
+exchange:
+  name: binance
+  trading_type: future
+  test_mode: false
+
+trading:
+  base_currency: USDT
+  quote_currencies:
+    - BTC
+    - ETH
+    - XRP
+    - ADA
+    - LINK
+  timeframe: 1m
+  leverage: 10
+  loop_interval: 15
+  order_types:
+    - market
+    - limit
+    - stop_loss
+    - take_profit
+
+strategies:
+  trend_following:
+    enabled: true
+    parameters:
+      # Use extremely small SMA periods
+      sma_short: 2
+      sma_long: 3
+      trend_threshold: 0.0001  # Essentially no threshold
+      allow_default_trades: true   # Allow default trades
+      force_trades: true    # FORCE TRADES ON EACH ITERATION
+      debug_mode: true      # Enable debug mode for test trades
+      stop_loss_pct: 0.005  # 0.5% stop loss
+      take_profit_pct: 0.01 # 1% take profit
+  
+  mean_reversion:
+    enabled: false
+    parameters:
+      rsi_period: 5
+      overbought: 65
+      oversold: 35
+      mean_period: 10
+  
+  volatility_breakout:
+    enabled: false
+    parameters:
+      bollinger_period: 20
+      bollinger_std: 2
+      volume_threshold: 1.5
+
+risk_management:
+  position_sizing:
+    max_position_size: 20  # Limit to 20 contracts per trade
+    risk_per_trade: 0.02   # 2% risk per trade
+  
+  stop_loss:
+    enabled: true
+    percentage: 0.005  # 0.5% stop loss
+    trailing: true
+  
+  take_profit:
+    enabled: true
+    percentage: 0.01  # 1% take profit
+    trailing: false
+  
+  portfolio:
+    max_drawdown: 0.05     # 5% maximum drawdown
+    max_open_positions: 2  # Only 2 positions at a time
+    correlation_threshold: 0.7
+
+logging:
+  level: DEBUG
+  save_trades: true
+  telegram_notifications: false 

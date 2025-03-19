@@ -1,0 +1,7 @@
+symbol,timeframe,sma_short,sma_long,total_return,total_trades,win_rate,max_drawdown,sharpe_ratio
+BTC/USDT,1h,20,50,0.0,0,0,0,
+BTC/USDT,4h,10,30,0.0,0,0,0,
+BTC/USDT,1d,7,21,0.0,0,0,0,
+ETH/USDT,1h,20,50,0.0,0,0,0,
+ETH/USDT,4h,10,30,0.0,0,0,0,
+ETH/USDT,1d,7,21,0.0,0,0,0,
