@@ -269,167 +269,68 @@ class Strategy(BaseStrategy):
         return signals
 
     def calculate_metrics(self, market_data: pd.DataFrame) -> dict:
-        """Calculate technical indicators and metrics for decision making."""
-        if market_data is None or len(market_data) < 20:
-            self.logger.warning("Not enough data points for reliable analysis")
+        """Calculate technical indicators and metrics for trend following strategy."""
+        if market_data is None or len(market_data) < max(self.sma_long, self.sma_short) + 5:
+            self.logger.warning("Not enough data points for reliable trend analysis")
             return {}
             
-        # Calculate Basic SMAs
-        short_period = self.parameters.get('sma_short', 5)
-        long_period = self.parameters.get('sma_long', 15)
-        
-        # Ensure we have enough data
-        if len(market_data) < long_period + 5:
-            self.logger.warning(f"Insufficient data for SMA calculation (need {long_period + 5}, have {len(market_data)})")
-            return {}
-        
-        # Calculate more advanced indicators
         try:
-            # Basic SMA calculations
-            market_data['sma_short'] = market_data['close'].rolling(window=short_period).mean()
-            market_data['sma_long'] = market_data['close'].rolling(window=long_period).mean()
+            # Calculate SMAs
+            sma_short = market_data['close'].rolling(window=self.sma_short).mean()
+            sma_long = market_data['close'].rolling(window=self.sma_long).mean()
             
-            # Add Exponential Moving Averages (faster response to price changes)
-            market_data['ema_short'] = market_data['close'].ewm(span=short_period, adjust=False).mean()
-            market_data['ema_long'] = market_data['close'].ewm(span=long_period, adjust=False).mean()
+            # Calculate momentum
+            momentum = market_data['close'].pct_change(periods=3)
             
-            # Add RSI (momentum indicator)
-            delta = market_data['close'].diff()
-            gain = delta.where(delta > 0, 0)
-            loss = -delta.where(delta < 0, 0)
-            avg_gain = gain.rolling(window=14).mean()
-            avg_loss = loss.rolling(window=14).mean()
-            rs = avg_gain / avg_loss
-            market_data['rsi'] = 100 - (100 / (1 + rs))
+            # Calculate volume trend
+            volume_sma = market_data['volume'].rolling(window=10).mean()
+            volume_trend = market_data['volume'] / volume_sma
             
-            # Add MACD (trend and momentum indicator)
-            market_data['ema_12'] = market_data['close'].ewm(span=12, adjust=False).mean()
-            market_data['ema_26'] = market_data['close'].ewm(span=26, adjust=False).mean()
-            market_data['macd'] = market_data['ema_12'] - market_data['ema_26']
-            market_data['macd_signal'] = market_data['macd'].ewm(span=9, adjust=False).mean()
-            market_data['macd_hist'] = market_data['macd'] - market_data['macd_signal']
-            
-            # Calculate Bollinger Bands (volatility indicator)
-            std_dev = market_data['close'].rolling(window=20).std()
-            market_data['bb_middle'] = market_data['close'].rolling(window=20).mean()
-            market_data['bb_upper'] = market_data['bb_middle'] + (std_dev * 2)
-            market_data['bb_lower'] = market_data['bb_middle'] - (std_dev * 2)
-            
-            # Calculate volume indicators
-            market_data['volume_sma'] = market_data['volume'].rolling(window=20).mean()
-            market_data['volume_ratio'] = market_data['volume'] / market_data['volume_sma']
-            
-            # Price rate of change
-            market_data['price_roc'] = market_data['close'].pct_change(periods=5) * 100
-            
-            # Get latest values
+            # Calculate price trend strength
             current_price = market_data['close'].iloc[-1]
-            current_short_sma = market_data['sma_short'].iloc[-1]
-            current_long_sma = market_data['sma_long'].iloc[-1]
-            current_short_ema = market_data['ema_short'].iloc[-1]
-            current_long_ema = market_data['ema_long'].iloc[-1]
-            current_rsi = market_data['rsi'].iloc[-1]
-            current_macd = market_data['macd'].iloc[-1]
-            current_macd_signal = market_data['macd_signal'].iloc[-1]
-            current_macd_hist = market_data['macd_hist'].iloc[-1]
-            current_volume_ratio = market_data['volume_ratio'].iloc[-1]
-            current_price_roc = market_data['price_roc'].iloc[-1]
+            price_change = market_data['close'].pct_change()
+            trend_strength = price_change.rolling(window=5).mean()
             
-            # Calculate trend strength
-            trend_strength = abs((current_short_sma - current_long_sma) / current_long_sma)
-            ema_trend_strength = abs((current_short_ema - current_long_ema) / current_long_ema)
-            
-            # Calculate volatility
-            recent_high = market_data['high'].iloc[-5:].max()
-            recent_low = market_data['low'].iloc[-5:].min()
-            volatility = (recent_high - recent_low) / current_price
-            
-            # Determine if price is near support/resistance
-            bb_position = (current_price - market_data['bb_lower'].iloc[-1]) / (market_data['bb_upper'].iloc[-1] - market_data['bb_lower'].iloc[-1])
-            
-            # Enhanced trend detection - checks if short SMA and EMA are both above/below long SMA and EMA
-            sma_trend_up = current_short_sma > current_long_sma
-            ema_trend_up = current_short_ema > current_long_ema
-            strong_uptrend = sma_trend_up and ema_trend_up
-            strong_downtrend = (not sma_trend_up) and (not ema_trend_up)
-            
-            # Check if MACD confirms the trend
-            macd_trend_up = current_macd > current_macd_signal and current_macd_hist > 0
-            macd_trend_down = current_macd < current_macd_signal and current_macd_hist < 0
-            
-            # Check if volume confirms the trend
-            volume_confirms = current_volume_ratio > 1.2
-            
-            # Calculate support and resistance levels
-            support_level = max(current_long_sma, market_data['bb_lower'].iloc[-1])
-            resistance_level = min(current_long_sma, market_data['bb_upper'].iloc[-1])
-            
-            # Overall signal strength (1.0 = strongest possible signal)
-            # Combine multiple factors with different weights
+            # Calculate signal strengths
             long_signal_strength = 0.0
             short_signal_strength = 0.0
             
-            # Trend component (40%)
-            if strong_uptrend:
-                long_signal_strength += 0.4 * min(1.0, trend_strength * 20)
-            if strong_downtrend:
-                short_signal_strength += 0.4 * min(1.0, trend_strength * 20)
-                
-            # MACD component (20%)
-            if macd_trend_up:
-                long_signal_strength += 0.2 * min(1.0, abs(current_macd_hist / current_price) * 1000)
-            if macd_trend_down:
-                short_signal_strength += 0.2 * min(1.0, abs(current_macd_hist / current_price) * 1000)
-                
-            # RSI component (15%)
-            if current_rsi < 30:  # Oversold
-                long_signal_strength += 0.15 * (1.0 - (current_rsi / 30))
-            if current_rsi > 70:  # Overbought
-                short_signal_strength += 0.15 * ((current_rsi - 70) / 30)
-                
-            # Volume component (15%)
-            if volume_confirms:
-                if strong_uptrend:
-                    long_signal_strength += 0.15 * min(1.0, current_volume_ratio - 1.0)
-                if strong_downtrend:
-                    short_signal_strength += 0.15 * min(1.0, current_volume_ratio - 1.0)
-                    
-            # Bollinger Band position (10%)
-            if bb_position < 0.2:  # Near lower band
-                long_signal_strength += 0.1 * (1.0 - bb_position * 5)
-            if bb_position > 0.8:  # Near upper band
-                short_signal_strength += 0.1 * ((bb_position - 0.8) * 5)
+            # Price above/below SMAs (40% weight)
+            if current_price > sma_short.iloc[-1] > sma_long.iloc[-1]:
+                long_signal_strength += 0.4 * min(1.0, (current_price - sma_long.iloc[-1]) / current_price * 100)
+            elif current_price < sma_short.iloc[-1] < sma_long.iloc[-1]:
+                short_signal_strength += 0.4 * min(1.0, (sma_long.iloc[-1] - current_price) / current_price * 100)
+            
+            # Momentum component (30% weight)
+            if momentum.iloc[-1] > 0:
+                long_signal_strength += 0.3 * min(1.0, momentum.iloc[-1] * 100)
+            else:
+                short_signal_strength += 0.3 * min(1.0, abs(momentum.iloc[-1] * 100))
+            
+            # Volume trend component (30% weight)
+            if volume_trend.iloc[-1] > 1.0:
+                if long_signal_strength > 0:
+                    long_signal_strength += 0.3 * min(1.0, volume_trend.iloc[-1] - 1.0)
+                if short_signal_strength > 0:
+                    short_signal_strength += 0.3 * min(1.0, volume_trend.iloc[-1] - 1.0)
             
             return {
                 'price': current_price,
-                'sma_short': current_short_sma,
-                'sma_long': current_long_sma,
-                'trend_strength': trend_strength,
-                'ema_trend_strength': ema_trend_strength,
-                'volatility': volatility,
-                'volume_ratio': current_volume_ratio,
-                'rsi': current_rsi,
-                'macd': current_macd,
-                'macd_signal': current_macd_signal,
-                'macd_hist': current_macd_hist,
-                'bb_position': bb_position,
-                'price_roc': current_price_roc,
-                'strong_uptrend': strong_uptrend,
-                'strong_downtrend': strong_downtrend,
-                'support_level': support_level,
-                'resistance_level': resistance_level,
+                'sma_short': sma_short.iloc[-1],
+                'sma_long': sma_long.iloc[-1],
+                'momentum': momentum.iloc[-1],
+                'volume_trend': volume_trend.iloc[-1],
+                'trend_strength': trend_strength.iloc[-1],
                 'long_signal_strength': long_signal_strength,
                 'short_signal_strength': short_signal_strength
             }
             
         except Exception as e:
-            self.logger.error(f"Error calculating metrics: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            self.logger.error(f"Error calculating trend metrics: {str(e)}")
             return {}
 
     def generate_signals(self, market_data: pd.DataFrame) -> Optional[List[dict]]:
-        """Generate trading signals with improved multi-factor analysis."""
+        """Generate trading signals based on market data."""
         # Check if we have any data at all
         if market_data is None or len(market_data) == 0:
             self.logger.error("No market data available - cannot generate signals")
@@ -457,88 +358,35 @@ class Strategy(BaseStrategy):
             
         self.logger.info(f"Analyzing {symbol} at price {current_price}")
         
-        # Handle force_trades parameter - highest priority
-        if self.parameters.get('force_trades', False):
-            self.logger.warning(f"FORCE TRADES is enabled for {symbol} - Generating trade regardless of conditions")
-            
-            # Decide if we should go long or short
-            # For simplicity, we'll just go with a sell/short by default
-            side = 'sell'
-            
-            position_size = self.calculate_position_size({
-                'price': current_price,
-                'side': side,
-                'symbol': symbol
-            })
-            
-            if position_size <= 0:
-                position_size = 11  # Force minimum position size
-                self.logger.info(f"Using minimum position size of 11 contracts for {symbol} due to FORCE TRADES mode")
-            
-            self.logger.info(f"Generating FORCED {side.upper()} signal for {symbol}: Price={current_price}, Position size={position_size}")
-            
-            return [{
-                'type': 'MARKET',
-                'side': side,
-                'amount': position_size,
-                'price': None,  # Market order
-                'stop_loss': current_price * (1.005 if side == 'sell' else 0.995),
-                'take_profit': current_price * (0.99 if side == 'sell' else 1.01)
-            }]
-        
-        # First, check and manage existing positions
-        if symbol and symbol != "Unknown/USDT":
-            # Check for existing position to avoid duplicate entries
-            existing_position = self._check_existing_position(symbol)
-            
-            # Return position management signals if any
-            position_signals = self._manage_existing_position(symbol, current_price)
-            if position_signals:
-                return position_signals
-            
-            # Don't generate new signals if we have an existing position or are waiting for exit
-            if existing_position or self.waiting_for_exit:
-                self.logger.info(f"Not generating new signals: existing position={bool(existing_position)}, waiting_for_exit={self.waiting_for_exit}")
-                return None
-        
-        # Calculate metrics - advanced analysis
+        # Calculate metrics
         metrics = self.calculate_metrics(market_data)
         if not metrics:
             self.logger.warning(f"Could not calculate metrics for {symbol}")
             return None
         
-        # Get the signal strength and other metrics
+        # Get signal strengths and other metrics
         long_signal_strength = metrics.get('long_signal_strength', 0)
         short_signal_strength = metrics.get('short_signal_strength', 0)
         trend_strength = metrics.get('trend_strength', 0)
-        volume_ratio = metrics.get('volume_ratio', 0)
-        volatility = metrics.get('volatility', 0)
-        rsi = metrics.get('rsi', 50)
-        bb_position = metrics.get('bb_position', 0.5)
+        volume_ratio = metrics.get('volume_trend', 0)
         
-        # Log detailed analysis
-        self.logger.info(f"{symbol} - Price: {current_price}, SMA Short: {metrics.get('sma_short')}, SMA Long: {metrics.get('sma_long')}")
-        self.logger.info(f"{symbol} - Signal Strength: Long={long_signal_strength:.4f}, Short={short_signal_strength:.4f}")
-        self.logger.info(f"{symbol} - RSI: {rsi:.2f}, BB Position: {bb_position:.2f}, Volume Ratio: {volume_ratio:.2f}")
+        # Calculate volatility for dynamic stop loss and take profit
+        volatility = market_data['close'].pct_change().std()
+        atr = market_data['high'].rolling(14).max() - market_data['low'].rolling(14).min()
+        avg_atr = atr.mean() / current_price  # As percentage of price
         
-        # Signal threshold - can be adjusted in parameters
-        default_threshold = self.parameters.get('trend_threshold', 0.001)
+        # Use max of volatility or ATR, with minimum of 0.5%
+        price_movement = max(volatility, avg_atr, 0.005)
         
-        # Dynamic threshold based on volatility
-        dynamic_threshold = default_threshold * (1 + (volatility * 10))
-        
-        # Allow default trades if enabled and symbols match criteria
-        allow_default = self.parameters.get('allow_default_trades', False)
-        
-        # Generate trading signals
+        # Generate signals with proper stop loss and take profit levels
         signals = []
         
         # LONG SIGNAL
-        if long_signal_strength > dynamic_threshold:
+        if long_signal_strength > self.trend_threshold:
             # Strong bullish signal
-            self.logger.info(f"STRONG LONG signal detected for {symbol} (strength: {long_signal_strength:.4f})")
+            self.logger.info(f"STRONG LONG signal for {symbol} (strength: {long_signal_strength:.4f})")
             
-            # Calculate optimal position size
+            # Calculate position size
             position_size = self.calculate_position_size({
                 'price': current_price,
                 'side': 'buy',
@@ -547,15 +395,13 @@ class Strategy(BaseStrategy):
             })
             
             if position_size > 0:
-                # Calculate dynamic stop loss and take profit levels
-                # Higher signal strength = wider take profit and tighter stop loss
-                sl_pct = self.parameters.get('stop_loss_pct', 0.005) * (1 - (long_signal_strength * 0.3))
-                tp_pct = self.parameters.get('take_profit_pct', 0.01) * (1 + (long_signal_strength * 0.5))
+                # Calculate stop loss and take profit based on volatility
+                stop_loss = current_price * (1 - price_movement * 2)  # 2x volatility for stop loss
+                take_profit = current_price * (1 + price_movement * 3)  # 3x volatility for take profit
                 
-                stop_loss = current_price * (1 - sl_pct)
-                take_profit = current_price * (1 + tp_pct)
-                
-                self.logger.info(f"Generating LONG signal for {symbol}: Price={current_price}, Size={position_size}, SL={stop_loss}, TP={take_profit}")
+                self.logger.info(f"Generating LONG signal for {symbol}: Price={current_price}, Size={position_size}, "
+                                f"SL={stop_loss:.8f} ({((stop_loss/current_price)-1)*100:.2f}%), "
+                                f"TP={take_profit:.8f} ({((take_profit/current_price)-1)*100:.2f}%)")
                 
                 signals.append({
                     'type': 'MARKET',
@@ -565,13 +411,13 @@ class Strategy(BaseStrategy):
                     'stop_loss': stop_loss,
                     'take_profit': take_profit
                 })
-                
+        
         # SHORT SIGNAL
-        elif short_signal_strength > dynamic_threshold:
+        elif short_signal_strength > self.trend_threshold:
             # Strong bearish signal
-            self.logger.info(f"STRONG SHORT signal detected for {symbol} (strength: {short_signal_strength:.4f})")
+            self.logger.info(f"STRONG SHORT signal for {symbol} (strength: {short_signal_strength:.4f})")
             
-            # Calculate optimal position size
+            # Calculate position size
             position_size = self.calculate_position_size({
                 'price': current_price,
                 'side': 'sell',
@@ -580,14 +426,13 @@ class Strategy(BaseStrategy):
             })
             
             if position_size > 0:
-                # Calculate dynamic stop loss and take profit levels
-                sl_pct = self.parameters.get('stop_loss_pct', 0.005) * (1 - (short_signal_strength * 0.3))
-                tp_pct = self.parameters.get('take_profit_pct', 0.01) * (1 + (short_signal_strength * 0.5))
+                # Calculate stop loss and take profit based on volatility
+                stop_loss = current_price * (1 + price_movement * 2)  # 2x volatility for stop loss
+                take_profit = current_price * (1 - price_movement * 3)  # 3x volatility for take profit
                 
-                stop_loss = current_price * (1 + sl_pct)
-                take_profit = current_price * (1 - tp_pct)
-                
-                self.logger.info(f"Generating SHORT signal for {symbol}: Price={current_price}, Size={position_size}, SL={stop_loss}, TP={take_profit}")
+                self.logger.info(f"Generating SHORT signal for {symbol}: Price={current_price}, Size={position_size}, "
+                                f"SL={stop_loss:.8f} ({((stop_loss/current_price)-1)*100:.2f}%), "
+                                f"TP={take_profit:.8f} ({((take_profit/current_price)-1)*100:.2f}%)")
                 
                 signals.append({
                     'type': 'MARKET',
@@ -597,33 +442,9 @@ class Strategy(BaseStrategy):
                     'stop_loss': stop_loss,
                     'take_profit': take_profit
                 })
-                
-        # Default trade if allowed and we have sufficient trend
-        elif allow_default and trend_strength > default_threshold * 0.8 and volume_ratio > 1.0:
-            side = 'buy' if metrics.get('sma_short', 0) > metrics.get('sma_long', 0) else 'sell'
-            self.logger.info(f"Generating DEFAULT {side.upper()} signal for {symbol} (trend_strength: {trend_strength:.4f})")
-            
-            position_size = max(11, self.calculate_position_size({
-                'price': current_price,
-                'side': side,
-                'symbol': symbol
-            }))
-            
-            if position_size > 0:
-                stop_loss = current_price * (0.995 if side == 'buy' else 1.005)
-                take_profit = current_price * (1.008 if side == 'buy' else 0.992)
-                
-                signals.append({
-                    'type': 'MARKET',
-                    'side': side,
-                    'amount': position_size,
-                    'price': None,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit
-                })
         
         else:
-            self.logger.info(f"No signals generated for {symbol} - insufficient signal strength (long: {long_signal_strength:.4f}, short: {short_signal_strength:.4f})")
+            self.logger.info(f"No signals generated for {symbol} - insufficient signal strength")
         
         return signals if signals else None
 
@@ -691,39 +512,6 @@ class Strategy(BaseStrategy):
         self.logger.info(f"Calculated position size for {symbol}: {position_size} contracts (signal strength: {signal_strength:.2f})")
         
         return position_size
-    
-    def calculate_metrics(self, market_data: pd.DataFrame) -> dict:
-        """
-        Calculate strategy-specific metrics.
-        
-        Args:
-            market_data: DataFrame with OHLCV data
-            
-        Returns:
-            Dict of metric names and values
-        """
-        if len(market_data) < self.sma_long:
-            return {}
-        
-        short_sma = SMAIndicator(
-            close=market_data['close'],
-            window=self.sma_short
-        ).sma_indicator()
-        
-        long_sma = SMAIndicator(
-            close=market_data['close'],
-            window=self.sma_long
-        ).sma_indicator()
-        
-        current_trend = 'bullish' if short_sma.iloc[-1] > long_sma.iloc[-1] else 'bearish'
-        trend_strength = abs(short_sma.iloc[-1] - long_sma.iloc[-1]) / long_sma.iloc[-1]
-        
-        return {
-            'current_trend': current_trend,
-            'trend_strength': trend_strength,
-            'sma_short': short_sma.iloc[-1],
-            'sma_long': long_sma.iloc[-1]
-        }
     
     def validate_parameters(self) -> bool:
         """

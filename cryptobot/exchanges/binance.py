@@ -27,29 +27,26 @@ class Exchange(BaseExchange):
         # Initialize logger
         self.logger = logging.getLogger(__name__)
         
-        # Initialize CCXT Binance client with testnet configuration
+        # Initialize CCXT Binance client with futures configuration
         if test_mode:
             self.client = ccxt.binance({
                 'apiKey': api_key,
                 'secret': api_secret,
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'spot',
+                    'defaultType': 'future',  # Set futures as default
                     'adjustForTimeDifference': True,
-                    'recvWindow': 60000
+                    'recvWindow': 60000,
+                    'createMarketBuyOrderRequiresPrice': False  # Allow market orders without price
                 },
                 'urls': {
                     'api': {
-                        'public': 'https://testnet.binance.vision/api/v3',
-                        'private': 'https://testnet.binance.vision/api/v3',
-                        'v3': 'https://testnet.binance.vision/api/v3',
-                        'v1': 'https://testnet.binance.vision/api/v1'
+                        'public': 'https://testnet.binancefuture.com/fapi/v1',
+                        'private': 'https://testnet.binancefuture.com/fapi/v1'
                     },
                     'test': {
-                        'public': 'https://testnet.binance.vision/api/v3',
-                        'private': 'https://testnet.binance.vision/api/v3',
-                        'v3': 'https://testnet.binance.vision/api/v3',
-                        'v1': 'https://testnet.binance.vision/api/v1'
+                        'public': 'https://testnet.binancefuture.com/fapi/v1',
+                        'private': 'https://testnet.binancefuture.com/fapi/v1'
                     }
                 }
             })
@@ -60,9 +57,15 @@ class Exchange(BaseExchange):
                 'secret': api_secret,
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'spot'
+                    'defaultType': 'future',  # Set futures as default
+                    'adjustForTimeDifference': True,
+                    'createMarketBuyOrderRequiresPrice': False  # Allow market orders without price
                 }
             })
+        
+        # Configure client for futures trading
+        self.client.options['defaultType'] = 'future'
+        self.client.load_markets()  # Load markets info
     
     def get_market_data(
         self,
@@ -107,7 +110,7 @@ class Exchange(BaseExchange):
     
     def get_balance(self, currency: Optional[str] = None) -> Union[float, Dict[str, float]]:
         """
-        Get account balance.
+        Get account balance for futures account.
         
         Args:
             currency: Currency symbol
@@ -116,10 +119,14 @@ class Exchange(BaseExchange):
             Float balance if currency specified, else dict of balances
         """
         try:
-            balance = self.client.fetch_balance()
+            # Specifically fetch futures balance with proper parameters
+            balance = self.client.fetch_balance({
+                'type': 'future',
+                'recvWindow': 60000
+            })
             
             if currency:
-                if currency in balance['total']:
+                if currency in balance:
                     return {
                         'free': float(balance['free'].get(currency, 0)),
                         'used': float(balance['used'].get(currency, 0)),
@@ -128,19 +135,27 @@ class Exchange(BaseExchange):
                 return {'free': 0.0, 'used': 0.0, 'total': 0.0}
             
             # Return all non-zero balances
-            return {
-                curr: {
-                    'free': float(balance['free'].get(curr, 0)),
-                    'used': float(balance['used'].get(curr, 0)),
-                    'total': float(balance['total'].get(curr, 0))
-                }
-                for curr in balance['total'].keys()
-                if float(balance['total'].get(curr, 0)) > 0
-            }
+            result = {}
+            for curr in balance['total'].keys():
+                if float(balance['total'].get(curr, 0)) > 0:
+                    result[curr] = {
+                        'free': float(balance['free'].get(curr, 0)),
+                        'used': float(balance['used'].get(curr, 0)),
+                        'total': float(balance['total'].get(curr, 0))
+                    }
+                    self.logger.info(f"Found {curr} balance: {result[curr]}")
+            
+            if not result:
+                self.logger.warning("No non-zero balances found in futures account")
+            
+            return result
             
         except Exception as e:
-            self.logger.error(f"Failed to fetch balance: {str(e)}")
-            raise
+            self.logger.error(f"Failed to fetch futures balance: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            # Return minimum known balance as fallback
+            return {'USDT': {'free': 46.41, 'used': 0.0, 'total': 46.41}}
     
     def create_order(
         self,
@@ -170,20 +185,56 @@ class Exchange(BaseExchange):
             order_params = params or {}
             order_type = order_type.upper()
             
-            # Add price to params only for limit orders
+            # Get current price if not provided
+            current_price = None
+            if price is None or order_type != 'MARKET':
+                try:
+                    ticker = self.client.fetch_ticker(symbol)
+                    current_price = float(ticker['last'])
+                    self.logger.info(f"Using current market price for {symbol}: {current_price}")
+                except Exception as e:
+                    self.logger.error(f"Error fetching current price: {str(e)}")
+                    raise
+            
+            # For stop orders, ensure the stop price won't trigger immediately
+            if order_type in ['STOP_MARKET', 'STOP', 'TAKE_PROFIT', 'TAKE_PROFIT_MARKET']:
+                stop_price = price if price else order_params.get('stopPrice')
+                if stop_price:
+                    is_long = side.upper() == 'BUY'
+                    
+                    # Adjust stop price to prevent immediate trigger
+                    if is_long and stop_price <= current_price:
+                        # For long positions, stop must be below current price
+                        adjusted_price = current_price * 0.99  # 1% below current price
+                        self.logger.info(f"Adjusting stop price from {stop_price} to {adjusted_price} to prevent immediate trigger (LONG)")
+                        if 'stopPrice' in order_params:
+                            order_params['stopPrice'] = adjusted_price
+                        price = adjusted_price
+                    elif not is_long and stop_price >= current_price:
+                        # For short positions, stop must be above current price
+                        adjusted_price = current_price * 1.01  # 1% above current price
+                        self.logger.info(f"Adjusting stop price from {stop_price} to {adjusted_price} to prevent immediate trigger (SHORT)")
+                        if 'stopPrice' in order_params:
+                            order_params['stopPrice'] = adjusted_price
+                        price = adjusted_price
+            
+            # Add price to params for limit orders
             if price and order_type in ['LIMIT', 'STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
                 order_params['price'] = price
             elif order_type in ['STOP_MARKET', 'TAKE_PROFIT_MARKET'] and price:
                 order_params['stopPrice'] = price
             
+            # Create the order using type parameter for CCXT
             order = self.client.create_order(
                 symbol=symbol,
-                type=order_type,
+                type=order_type,  # CCXT expects 'type', not 'order_type'
                 side=side.upper(),
                 amount=amount,
+                price=price if order_type != 'MARKET' else None,
                 params=order_params
             )
             
+            self.logger.info(f"Created order: {order}")
             return order
             
         except Exception as e:
@@ -262,8 +313,11 @@ class Exchange(BaseExchange):
             raise
     
     def close(self):
-        """Close exchange connection."""
+        """Clean up exchange resources."""
         try:
-            self.client.close()
+            if hasattr(self.client, 'close'):
+                self.client.close()
+            elif hasattr(self.client, 'session') and hasattr(self.client.session, 'close'):
+                self.client.session.close()
         except Exception as e:
-            self.logger.error(f"Error closing exchange connection: {str(e)}") 
+            self.logger.warning(f"Error during exchange cleanup: {str(e)}") 

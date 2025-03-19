@@ -1,8 +1,9 @@
 """
-Trading strategies package.
+Trading strategy modules.
 """
 
-from .base import BaseStrategy
-from .trend_following import Strategy
+from . import base
+from . import trend_following
+from . import mean_reversion
 
-__all__ = ['BaseStrategy', 'Strategy'] 
+__all__ = ['BaseStrategy', 'Strategy', 'mean_reversion'] 

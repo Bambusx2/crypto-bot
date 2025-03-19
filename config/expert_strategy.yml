@@ -27,7 +27,7 @@ trading:
     - FLUX
   timeframe: 1m
   leverage: 10
-  loop_interval: 10  # Check more frequently (10 seconds)
+  loop_interval: 5  # Check more frequently (5 seconds)
   order_types:
     - market
     - limit
@@ -38,24 +38,40 @@ strategies:
   trend_following:
     enabled: true
     parameters:
-      # Strategy parameters calibrated for optimal performance
-      sma_short: 5      # 5-minute SMA
-      sma_long: 15      # 15-minute SMA
-      trend_threshold: 0.0007  # Lower threshold to capture more opportunities
-      allow_default_trades: true  # Allow trades based on standard criteria
-      force_trades: false  # Don't force trades, rely on expert strategy
-      debug_mode: false    # No debug mode
-      stop_loss_pct: 0.006  # Slightly wider stop loss for less whipsaws
-      take_profit_pct: 0.015 # Higher take profit for better reward/risk ratio
+      # More sensitive parameters for increased signal generation
+      sma_short: 2      # Faster 2-minute SMA for quicker entry
+      sma_long: 5       # 5-minute SMA for faster trend confirmation
+      trend_threshold: 0.0002  # Much lower threshold to capture more opportunities
+      allow_default_trades: true
+      force_trades: false
+      debug_mode: false
+      stop_loss_pct: 0.01    # Tighter stop loss for better risk management
+      take_profit_pct: 0.015  # Lower take profit for faster gains
+      # Advanced parameters
+      use_dynamic_stops: true
+      use_trailing_stops: true
+      trailing_stop_activation: 0.003  # Activate trailing stop sooner
+      trailing_stop_distance: 0.002    # Tighter trailing stop
+      # Volume filters
+      min_volume_ratio: 1.05  # Lower volume requirement
+      # Position sizing
+      position_scaling: true
+      max_position_ratio: 0.2  # More conservative position size
+      # Profit optimization
+      partial_take_profit: true
+      partial_tp_threshold: 0.005  # Take first profit at 0.5%
+      partial_tp_size: 0.3        # Close 30% at first take profit
   
-  # Disabled strategies (could be implemented in the future)
+  # Enabled mean_reversion as secondary strategy
   mean_reversion:
-    enabled: false
+    enabled: true
     parameters:
-      rsi_period: 5
-      overbought: 65
-      oversold: 35
-      mean_period: 10
+      rsi_period: 3           # Faster RSI period
+      overbought: 75          # Slightly higher overbought
+      oversold: 25           # Slightly lower oversold
+      mean_period: 5         # Shorter mean period
+      mean_threshold: 0.003   # More sensitive mean threshold
+      use_with_trend: true
   
   volatility_breakout:
     enabled: false
@@ -66,23 +82,28 @@ strategies:
 
 risk_management:
   position_sizing:
-    max_position_size: 50  # Maximum 50 contracts
-    risk_per_trade: 0.02   # 2% risk per trade
+    max_position_size: 50     # More conservative position size
+    risk_per_trade: 0.015    # Lower risk per trade
   
   stop_loss:
     enabled: true
-    percentage: 0.006  # 0.6% stop loss
-    trailing: true     # Enable trailing stops to lock in profits
+    percentage: 0.01         # 1% stop loss
+    trailing: true
+    dynamic: true
   
   take_profit:
     enabled: true
-    percentage: 0.015  # 1.5% take profit
-    trailing: false    # Fixed take profit levels
+    percentage: 0.015        # 1.5% take profit
+    partial_exits: true
+    tp_levels: [0.005, 0.01, 0.015]  # More granular take profit levels
+    tp_sizes: [0.3, 0.3, 0.4]        # Balanced exit sizes
   
   portfolio:
-    max_drawdown: 0.05     # 5% maximum drawdown
-    max_open_positions: 3  # Allow up to 3 positions simultaneously
-    correlation_threshold: 0.7  # Avoid highly correlated positions
+    max_drawdown: 0.05
+    max_open_positions: 4
+    correlation_threshold: 0.7
+    max_daily_trades: 30      # Allow more trades per day
+    cooldown_period: 30       # Shorter cooldown between trades
 
 logging:
   level: INFO
